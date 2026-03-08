@@ -1,15 +1,16 @@
 package api
 
 import (
-	"github.com/gin-gonic/gin"
+	"net/http"
+
 	"gorm.io/gorm"
 
 	"tick/be/internal/handler"
 	"tick/be/internal/middleware"
 )
 
-func SetupRouter(db *gorm.DB, jwtSecret, googleClientID string) *gin.Engine {
-	r := gin.Default()
+func SetupRouter(db *gorm.DB, jwtSecret, googleClientID string) http.Handler {
+	mux := http.NewServeMux()
 
 	authHandler := handler.NewAuthHandler(db, jwtSecret, googleClientID)
 	categoryHandler := handler.NewCategoryHandler(db)
@@ -18,42 +19,39 @@ func SetupRouter(db *gorm.DB, jwtSecret, googleClientID string) *gin.Engine {
 	syncHandler := handler.NewSyncHandler(db)
 	statsHandler := handler.NewStatsHandler(db)
 
-	v1 := r.Group("/api/v1")
-	{
-		// Public routes
-		v1.POST("/auth/google", authHandler.GoogleLogin)
-
-		// Protected routes
-		protected := v1.Group("")
-		protected.Use(middleware.JWTAuth(jwtSecret))
-		{
-			// Auth
-			protected.POST("/auth/refresh", authHandler.Refresh)
-
-			// Categories
-			protected.GET("/categories", categoryHandler.List)
-			protected.POST("/categories", categoryHandler.Create)
-			protected.PUT("/categories/:id", categoryHandler.Update)
-			protected.DELETE("/categories/:id", categoryHandler.Delete)
-
-			// Habits
-			protected.GET("/habits", habitHandler.List)
-			protected.POST("/habits", habitHandler.Create)
-			protected.PUT("/habits/:id", habitHandler.Update)
-			protected.DELETE("/habits/:id", habitHandler.Delete)
-
-			// Habit Logs
-			protected.GET("/habits/:habit_id/logs", habitLogHandler.List)
-			protected.POST("/habits/:habit_id/logs", habitLogHandler.Create)
-			protected.DELETE("/habits/:habit_id/logs/:log_id", habitLogHandler.Delete)
-
-			// Sync
-			protected.POST("/sync", syncHandler.Sync)
-
-			// Stats
-			protected.GET("/habits/:id/stats", statsHandler.GetStats)
-		}
+	jwt := middleware.JWTAuth(jwtSecret)
+	protect := func(h http.HandlerFunc) http.Handler {
+		return jwt(http.HandlerFunc(h))
 	}
 
-	return r
+	// Public
+	mux.HandleFunc("POST /api/v1/auth/google", authHandler.GoogleLogin)
+
+	// Auth
+	mux.Handle("POST /api/v1/auth/refresh", protect(authHandler.Refresh))
+
+	// Categories
+	mux.Handle("GET /api/v1/categories", protect(categoryHandler.List))
+	mux.Handle("POST /api/v1/categories", protect(categoryHandler.Create))
+	mux.Handle("PUT /api/v1/categories/{id}", protect(categoryHandler.Update))
+	mux.Handle("DELETE /api/v1/categories/{id}", protect(categoryHandler.Delete))
+
+	// Habits
+	mux.Handle("GET /api/v1/habits", protect(habitHandler.List))
+	mux.Handle("POST /api/v1/habits", protect(habitHandler.Create))
+	mux.Handle("PUT /api/v1/habits/{id}", protect(habitHandler.Update))
+	mux.Handle("DELETE /api/v1/habits/{id}", protect(habitHandler.Delete))
+
+	// Habit logs
+	mux.Handle("GET /api/v1/habits/{habit_id}/logs", protect(habitLogHandler.List))
+	mux.Handle("POST /api/v1/habits/{habit_id}/logs", protect(habitLogHandler.Create))
+	mux.Handle("DELETE /api/v1/habits/{habit_id}/logs/{log_id}", protect(habitLogHandler.Delete))
+
+	// Stats
+	mux.Handle("GET /api/v1/habits/{id}/stats", protect(statsHandler.GetStats))
+
+	// Sync
+	mux.Handle("POST /api/v1/sync", protect(syncHandler.Sync))
+
+	return mux
 }

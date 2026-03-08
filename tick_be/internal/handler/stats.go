@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"tick/be/internal/model"
@@ -30,21 +29,20 @@ type statsResponse struct {
 	ComputedAt       string  `json:"computed_at"`
 }
 
-func (h *StatsHandler) GetStats(c *gin.Context) {
-	userID := getUserID(c)
-	habitID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
+	habitID, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
+		respondError(w, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
 		return
 	}
 
 	var habit model.Habit
 	if err := h.DB.Where("id = ? AND user_id = ?", habitID, userID).First(&habit).Error; err != nil {
-		respondError(c, http.StatusNotFound, "NOT_FOUND", "Habit not found or not owned by user")
+		respondError(w, http.StatusNotFound, "NOT_FOUND", "Habit not found or not owned by user")
 		return
 	}
 
-	// Fetch all non-deleted logs for this habit
 	var logs []model.HabitLog
 	h.DB.Where("habit_id = ? AND user_id = ? AND is_deleted = ?", habitID, userID, false).
 		Order("completed_at ASC").
@@ -62,7 +60,7 @@ func (h *StatsHandler) GetStats(c *gin.Context) {
 		currentStreak, longestStreak, completionRate = computeWeeklyStats(logs, habit, now)
 	}
 
-	c.JSON(http.StatusOK, statsResponse{
+	writeJSON(w, http.StatusOK, statsResponse{
 		HabitID:          uint(habitID),
 		CurrentStreak:    currentStreak,
 		LongestStreak:    longestStreak,
@@ -77,7 +75,6 @@ func computeDailyStats(logs []model.HabitLog, habit model.Habit, now time.Time) 
 		return 0, 0, 0
 	}
 
-	// Build a set of dates with sufficient completions
 	dayCounts := make(map[string]int)
 	for _, l := range logs {
 		day := l.CompletedAt.Format("2006-01-02")
@@ -91,16 +88,11 @@ func computeDailyStats(logs []model.HabitLog, habit model.Habit, now time.Time) 
 		}
 	}
 
-	// Sort fulfilled days
 	sortedDays := make([]string, 0, len(fulfilledDays))
 	for day := range fulfilledDays {
 		sortedDays = append(sortedDays, day)
 	}
 	sort.Strings(sortedDays)
-
-	// Compute streaks
-	longestStreak = 0
-	currentStreak = 0
 
 	if len(sortedDays) > 0 {
 		streak := 1
@@ -120,7 +112,6 @@ func computeDailyStats(logs []model.HabitLog, habit model.Habit, now time.Time) 
 			longestStreak = streak
 		}
 
-		// Current streak: check if the last fulfilled day is today or yesterday
 		lastDay, _ := time.Parse("2006-01-02", sortedDays[len(sortedDays)-1])
 		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
@@ -138,7 +129,6 @@ func computeDailyStats(logs []model.HabitLog, habit model.Habit, now time.Time) 
 		}
 	}
 
-	// Completion rate: fulfilled days / total days since habit creation
 	createdDay := time.Date(habit.CreatedAt.Year(), habit.CreatedAt.Month(), habit.CreatedAt.Day(), 0, 0, 0, 0, time.UTC)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	totalDays := int(today.Sub(createdDay).Hours()/24) + 1
@@ -154,7 +144,6 @@ func computeWeeklyStats(logs []model.HabitLog, habit model.Habit, now time.Time)
 		return 0, 0, 0
 	}
 
-	// Group logs by ISO week
 	weekCounts := make(map[string]int)
 	for _, l := range logs {
 		year, week := l.CompletedAt.ISOWeek()
@@ -169,22 +158,15 @@ func computeWeeklyStats(logs []model.HabitLog, habit model.Habit, now time.Time)
 		}
 	}
 
-	// Build a sorted list of fulfilled weeks as time values (start of each ISO week)
 	type weekEntry struct {
 		key  string
 		date time.Time
 	}
 	var sortedWeeks []weekEntry
 	for key := range fulfilledWeeks {
-		// Parse year and week number
-		var year, week int
-		n, _ := strconv.Atoi(key[:4])
-		year = n
-		wStr := key[6:] // after "-W"
-		w, _ := strconv.Atoi(wStr)
-		week = w
+		year, _ := strconv.Atoi(key[:4])
+		week, _ := strconv.Atoi(key[6:])
 
-		// Get the Monday of this ISO week
 		jan4 := time.Date(year, 1, 4, 0, 0, 0, 0, time.UTC)
 		_, jan4Week := jan4.ISOWeek()
 		mondayOfWeek1 := jan4.AddDate(0, 0, -int(jan4.Weekday()-time.Monday))
@@ -199,7 +181,6 @@ func computeWeeklyStats(logs []model.HabitLog, habit model.Habit, now time.Time)
 		return sortedWeeks[i].date.Before(sortedWeeks[j].date)
 	})
 
-	// Compute streaks
 	if len(sortedWeeks) > 0 {
 		streak := 1
 		for i := 1; i < len(sortedWeeks); i++ {
@@ -217,7 +198,6 @@ func computeWeeklyStats(logs []model.HabitLog, habit model.Habit, now time.Time)
 			longestStreak = streak
 		}
 
-		// Current streak
 		currentYear, currentWeek := now.ISOWeek()
 		lastWeek := sortedWeeks[len(sortedWeeks)-1]
 		lastYear, lastWeekNum := lastWeek.date.ISOWeek()
@@ -238,7 +218,6 @@ func computeWeeklyStats(logs []model.HabitLog, habit model.Habit, now time.Time)
 		}
 	}
 
-	// Completion rate
 	createdYear, createdWeek := habit.CreatedAt.ISOWeek()
 	currentYear, currentWeek := now.ISOWeek()
 	totalWeeks := (currentYear-createdYear)*52 + (currentWeek - createdWeek) + 1

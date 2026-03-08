@@ -2,10 +2,11 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/api/idtoken"
 	"gorm.io/gorm"
@@ -50,16 +51,16 @@ type refreshResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-func (h *AuthHandler) GoogleLogin(c *gin.Context) {
+func (h *AuthHandler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 	var req googleAuthRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.IDToken == "" {
-		respondError(c, http.StatusBadRequest, "MISSING_ID_TOKEN", "id_token field is required")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IDToken == "" {
+		respondError(w, http.StatusBadRequest, "MISSING_ID_TOKEN", "id_token field is required")
 		return
 	}
 
 	payload, err := idtoken.Validate(context.Background(), req.IDToken, h.GoogleClientID)
 	if err != nil {
-		respondError(c, http.StatusUnauthorized, "INVALID_ID_TOKEN", "Token failed Google verification")
+		respondError(w, http.StatusUnauthorized, "INVALID_ID_TOKEN", "Token failed Google verification")
 		return
 	}
 
@@ -74,8 +75,8 @@ func (h *AuthHandler) GoogleLogin(c *gin.Context) {
 	user := &model.User{}
 	result := h.DB.Where("google_id = ?", googleID).First(user)
 
-	if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
-		respondError(c, http.StatusInternalServerError, "SERVER_ERROR", "Database error")
+	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		respondError(w, http.StatusInternalServerError, "SERVER_ERROR", "Database error")
 		return
 	}
 
@@ -99,18 +100,18 @@ func (h *AuthHandler) GoogleLogin(c *gin.Context) {
 			Picture:       picture,
 		}
 		if err := h.DB.Create(user).Error; err != nil {
-			respondError(c, http.StatusInternalServerError, "SERVER_ERROR", "Failed to create user")
+			respondError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to create user")
 			return
 		}
 	}
 
 	token, expiresAt, err := h.generateJWT(user.ID)
 	if err != nil {
-		respondError(c, http.StatusInternalServerError, "SERVER_ERROR", "Failed to generate token")
+		respondError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to generate token")
 		return
 	}
 
-	c.JSON(http.StatusOK, authResponse{
+	writeJSON(w, http.StatusOK, authResponse{
 		Token:     token,
 		ExpiresAt: expiresAt,
 		User: authUserInfo{
@@ -122,20 +123,20 @@ func (h *AuthHandler) GoogleLogin(c *gin.Context) {
 	})
 }
 
-func (h *AuthHandler) Refresh(c *gin.Context) {
-	userID := getUserID(c)
+func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
 	if userID == 0 {
-		respondError(c, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid token")
+		respondError(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid token")
 		return
 	}
 
 	token, expiresAt, err := h.generateJWT(userID)
 	if err != nil {
-		respondError(c, http.StatusInternalServerError, "SERVER_ERROR", "Failed to generate token")
+		respondError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to generate token")
 		return
 	}
 
-	c.JSON(http.StatusOK, refreshResponse{
+	writeJSON(w, http.StatusOK, refreshResponse{
 		Token:     token,
 		ExpiresAt: expiresAt,
 	})

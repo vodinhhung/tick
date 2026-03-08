@@ -1,10 +1,10 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"tick/be/internal/model"
@@ -65,13 +65,13 @@ type syncResponse struct {
 	IDMap      syncIDMap          `json:"id_map"`
 }
 
-func (h *SyncHandler) Sync(c *gin.Context) {
-	userID := getUserID(c)
+func (h *SyncHandler) Sync(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
 	serverTime := time.Now().UTC()
 
 	var req syncRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
 		return
 	}
 
@@ -87,14 +87,10 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 			continue
 		}
 
-		// Find existing by a synthetic client_id approach. Categories don't have client_id in DB,
-		// so we match by name + user_id for custom categories. For sync we'll use a convention:
-		// categories are matched by name for the user.
 		var existing model.Category
 		err := h.DB.Where("user_id = ? AND name = ?", userID, catInput.Name).First(&existing).Error
 
 		if err == nil {
-			// Exists on server: server wins if server is newer
 			if !existing.UpdatedAt.After(catInput.UpdatedAt) {
 				h.DB.Model(&existing).Updates(map[string]interface{}{
 					"name":       catInput.Name,
@@ -104,7 +100,6 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 			}
 			idMap.Categories[catInput.ClientID] = existing.ID
 		} else {
-			// Create new
 			cat := model.Category{
 				UserID:    &userID,
 				Name:      catInput.Name,
@@ -127,7 +122,6 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 		err := h.DB.Where("client_id = ?", habitInput.ClientID).First(&existing).Error
 
 		if err == nil {
-			// Exists: server wins if server is newer
 			if !existing.UpdatedAt.After(habitInput.UpdatedAt) {
 				updates := map[string]interface{}{
 					"name":            habitInput.Name,
@@ -136,7 +130,6 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 					"is_deleted":      habitInput.IsDeleted,
 					"updated_at":      serverTime,
 				}
-				// Resolve category_client_id to server category ID
 				if habitInput.CategoryClientID != "" {
 					if catID, ok := idMap.Categories[habitInput.CategoryClientID]; ok {
 						updates["category_id"] = catID
@@ -146,7 +139,6 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 			}
 			idMap.Habits[habitInput.ClientID] = existing.ID
 		} else {
-			// Create new
 			habit := model.Habit{
 				UserID:         userID,
 				ClientID:       habitInput.ClientID,
@@ -176,25 +168,21 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 		err := h.DB.Where("client_id = ?", logInput.ClientID).First(&existing).Error
 
 		if err == nil {
-			// Exists: server wins if server is newer
 			if !existing.UpdatedAt.After(logInput.UpdatedAt) {
-				updates := map[string]interface{}{
+				h.DB.Model(&existing).Updates(map[string]interface{}{
 					"completed_at": logInput.CompletedAt,
 					"note":         logInput.Note,
 					"is_deleted":   logInput.IsDeleted,
 					"updated_at":   serverTime,
-				}
-				h.DB.Model(&existing).Updates(updates)
+				})
 			}
 			idMap.Logs[logInput.ClientID] = existing.ID
 		} else {
-			// Resolve habit_client_id to server habit ID
 			var habitID uint
 			if logInput.HabitClientID != "" {
 				if hID, ok := idMap.Habits[logInput.HabitClientID]; ok {
 					habitID = hID
 				} else {
-					// Try to find by client_id in DB
 					var habit model.Habit
 					if err := h.DB.Where("client_id = ? AND user_id = ?", logInput.HabitClientID, userID).First(&habit).Error; err == nil {
 						habitID = habit.ID
@@ -203,10 +191,10 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 			}
 
 			if habitID == 0 {
-				continue // Skip logs without a valid habit
+				continue
 			}
 
-			logEntry := model.HabitLog{
+			entry := model.HabitLog{
 				UserID:      userID,
 				HabitID:     habitID,
 				ClientID:    logInput.ClientID,
@@ -214,8 +202,8 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 				Note:        logInput.Note,
 				IsDeleted:   logInput.IsDeleted,
 			}
-			if err := h.DB.Create(&logEntry).Error; err == nil {
-				idMap.Logs[logInput.ClientID] = logEntry.ID
+			if err := h.DB.Create(&entry).Error; err == nil {
+				idMap.Logs[logInput.ClientID] = entry.ID
 			}
 		}
 	}
@@ -239,7 +227,6 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 	habitQuery.Find(&changedHabits)
 	logQuery.Find(&changedLogs)
 
-	// Build response
 	catResponses := make([]categoryResponse, len(changedCategories))
 	for i, cat := range changedCategories {
 		catResponses[i] = toCategoryResponse(&cat)
@@ -251,11 +238,11 @@ func (h *SyncHandler) Sync(c *gin.Context) {
 	}
 
 	logResponses := make([]logResponse, len(changedLogs))
-	for i, log := range changedLogs {
-		logResponses[i] = toLogResponse(&log)
+	for i, l := range changedLogs {
+		logResponses[i] = toLogResponse(&l)
 	}
 
-	c.JSON(http.StatusOK, syncResponse{
+	writeJSON(w, http.StatusOK, syncResponse{
 		ServerTime: serverTime.Format(time.RFC3339),
 		Categories: catResponses,
 		Habits:     habitResponses,

@@ -1,11 +1,11 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"tick/be/internal/model"
@@ -51,114 +51,108 @@ func toLogResponse(l *model.HabitLog) logResponse {
 	}
 }
 
-func (h *HabitLogHandler) List(c *gin.Context) {
-	userID := getUserID(c)
-	habitID, err := strconv.ParseUint(c.Param("habit_id"), 10, 64)
+func (h *HabitLogHandler) List(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
+	habitID, err := strconv.ParseUint(r.PathValue("habit_id"), 10, 64)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
+		respondError(w, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
 		return
 	}
 
-	// Verify habit ownership
 	var habit model.Habit
 	if err := h.DB.Where("id = ? AND user_id = ?", habitID, userID).First(&habit).Error; err != nil {
-		respondError(c, http.StatusNotFound, "HABIT_NOT_FOUND", "Habit not found or not owned by user")
+		respondError(w, http.StatusNotFound, "HABIT_NOT_FOUND", "Habit not found or not owned by user")
 		return
 	}
 
 	serverTime := time.Now().UTC()
 	query := h.DB.Where("habit_id = ? AND user_id = ?", habitID, userID)
 
-	if from := c.Query("from"); from != "" {
-		t, err := time.Parse(time.RFC3339, from)
-		if err == nil {
+	q := r.URL.Query()
+	if from := q.Get("from"); from != "" {
+		if t, err := time.Parse(time.RFC3339, from); err == nil {
 			query = query.Where("completed_at >= ?", t)
 		}
 	}
 
-	if to := c.Query("to"); to != "" {
-		t, err := time.Parse(time.RFC3339, to)
-		if err == nil {
+	if to := q.Get("to"); to != "" {
+		if t, err := time.Parse(time.RFC3339, to); err == nil {
 			query = query.Where("completed_at <= ?", t)
 		}
 	}
 
-	if updatedAfter := c.Query("updated_after"); updatedAfter != "" {
-		t, err := time.Parse(time.RFC3339, updatedAfter)
-		if err == nil {
+	if updatedAfter := q.Get("updated_after"); updatedAfter != "" {
+		if t, err := time.Parse(time.RFC3339, updatedAfter); err == nil {
 			query = query.Where("updated_at > ?", t)
 		}
 	}
 
-	includeDeleted := c.Query("include_deleted") == "true"
-	if !includeDeleted {
+	if q.Get("include_deleted") != "true" {
 		query = query.Where("is_deleted = ?", false)
 	}
 
 	var logs []model.HabitLog
 	if err := query.Order("completed_at DESC").Find(&logs).Error; err != nil {
-		respondError(c, http.StatusInternalServerError, "SERVER_ERROR", "Failed to fetch logs")
+		respondError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to fetch logs")
 		return
 	}
 
 	result := make([]logResponse, len(logs))
-	for i, log := range logs {
-		result[i] = toLogResponse(&log)
+	for i, l := range logs {
+		result[i] = toLogResponse(&l)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"logs":        result,
 		"server_time": serverTime.Format(time.RFC3339),
 	})
 }
 
-func (h *HabitLogHandler) Create(c *gin.Context) {
-	userID := getUserID(c)
-	habitID, err := strconv.ParseUint(c.Param("habit_id"), 10, 64)
+func (h *HabitLogHandler) Create(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
+	habitID, err := strconv.ParseUint(r.PathValue("habit_id"), 10, 64)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
+		respondError(w, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
 		return
 	}
 
-	// Verify habit ownership
 	var habit model.Habit
 	if err := h.DB.Where("id = ? AND user_id = ?", habitID, userID).First(&habit).Error; err != nil {
-		respondError(c, http.StatusNotFound, "HABIT_NOT_FOUND", "Habit not found or not owned by user")
+		respondError(w, http.StatusNotFound, "HABIT_NOT_FOUND", "Habit not found or not owned by user")
 		return
 	}
 
 	var req createLogRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
 		return
 	}
 
 	if req.ClientID == "" {
-		respondError(c, http.StatusBadRequest, "MISSING_CLIENT_ID", "client_id is required")
+		respondError(w, http.StatusBadRequest, "MISSING_CLIENT_ID", "client_id is required")
 		return
 	}
 
 	if req.CompletedAt.IsZero() {
-		respondError(c, http.StatusBadRequest, "MISSING_COMPLETED_AT", "completed_at is required")
+		respondError(w, http.StatusBadRequest, "MISSING_COMPLETED_AT", "completed_at is required")
 		return
 	}
 
 	if req.Note != nil && len(*req.Note) > 280 {
-		respondError(c, http.StatusUnprocessableEntity, "NOTE_TOO_LONG", "Note must not exceed 280 characters")
+		respondError(w, http.StatusUnprocessableEntity, "NOTE_TOO_LONG", "Note must not exceed 280 characters")
 		return
 	}
 
-	// Idempotency: check if client_id already exists
+	// Idempotency: return existing if client_id already exists
 	var existing model.HabitLog
 	if err := h.DB.Where("client_id = ?", req.ClientID).First(&existing).Error; err == nil {
-		c.JSON(http.StatusOK, toLogResponse(&existing))
+		writeJSON(w, http.StatusOK, toLogResponse(&existing))
 		return
 	}
 
-	// Compute is_extra based on existing logs for the same period
 	isExtra := h.computeIsExtra(&habit, req.CompletedAt, userID)
 
-	log := model.HabitLog{
+	entry := model.HabitLog{
 		UserID:      userID,
 		HabitID:     uint(habitID),
 		ClientID:    req.ClientID,
@@ -167,48 +161,47 @@ func (h *HabitLogHandler) Create(c *gin.Context) {
 		IsExtra:     isExtra,
 	}
 
-	if err := h.DB.Create(&log).Error; err != nil {
-		respondError(c, http.StatusInternalServerError, "SERVER_ERROR", "Failed to create log")
+	if err := h.DB.Create(&entry).Error; err != nil {
+		respondError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to create log")
 		return
 	}
 
-	c.JSON(http.StatusCreated, toLogResponse(&log))
+	writeJSON(w, http.StatusCreated, toLogResponse(&entry))
 }
 
-func (h *HabitLogHandler) Delete(c *gin.Context) {
-	userID := getUserID(c)
-	habitID, err := strconv.ParseUint(c.Param("habit_id"), 10, 64)
+func (h *HabitLogHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
+	habitID, err := strconv.ParseUint(r.PathValue("habit_id"), 10, 64)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
+		respondError(w, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
 		return
 	}
 
-	logID, err := strconv.ParseUint(c.Param("log_id"), 10, 64)
+	logID, err := strconv.ParseUint(r.PathValue("log_id"), 10, 64)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_ID", "Invalid log ID")
+		respondError(w, http.StatusBadRequest, "INVALID_ID", "Invalid log ID")
 		return
 	}
 
-	var log model.HabitLog
-	if err := h.DB.Where("id = ? AND habit_id = ? AND user_id = ?", logID, habitID, userID).First(&log).Error; err != nil {
-		respondError(c, http.StatusNotFound, "NOT_FOUND", "Log not found or not owned by user")
+	var entry model.HabitLog
+	if err := h.DB.Where("id = ? AND habit_id = ? AND user_id = ?", logID, habitID, userID).First(&entry).Error; err != nil {
+		respondError(w, http.StatusNotFound, "NOT_FOUND", "Log not found or not owned by user")
 		return
 	}
 
 	now := time.Now().UTC()
-	h.DB.Model(&log).Updates(map[string]interface{}{
+	h.DB.Model(&entry).Updates(map[string]interface{}{
 		"is_deleted": true,
 		"updated_at": now,
 	})
 
-	c.Status(http.StatusNoContent)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *HabitLogHandler) computeIsExtra(habit *model.Habit, completedAt time.Time, userID uint) bool {
 	var count int64
 
 	if habit.FrequencyType == "daily" {
-		// Count non-deleted logs for the same day
 		startOfDay := time.Date(completedAt.Year(), completedAt.Month(), completedAt.Day(), 0, 0, 0, 0, time.UTC)
 		endOfDay := startOfDay.Add(24 * time.Hour)
 		h.DB.Model(&model.HabitLog{}).Where(
@@ -216,8 +209,9 @@ func (h *HabitLogHandler) computeIsExtra(habit *model.Habit, completedAt time.Ti
 			habit.ID, userID, startOfDay, endOfDay, false,
 		).Count(&count)
 		return count >= int64(habit.FrequencyValue)
-	} else if habit.FrequencyType == "weekly" {
-		// Count non-deleted logs for the same week (Monday-based)
+	}
+
+	if habit.FrequencyType == "weekly" {
 		weekday := completedAt.Weekday()
 		if weekday == time.Sunday {
 			weekday = 7

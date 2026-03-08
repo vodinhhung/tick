@@ -1,11 +1,11 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"tick/be/internal/model"
@@ -61,27 +61,26 @@ func toHabitResponse(h *model.Habit) habitResponse {
 	}
 }
 
-func (h *HabitHandler) List(c *gin.Context) {
-	userID := getUserID(c)
+func (h *HabitHandler) List(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
 	serverTime := time.Now().UTC()
 
 	query := h.DB.Where("user_id = ?", userID)
 
-	if updatedAfter := c.Query("updated_after"); updatedAfter != "" {
+	if updatedAfter := r.URL.Query().Get("updated_after"); updatedAfter != "" {
 		t, err := time.Parse(time.RFC3339, updatedAfter)
 		if err == nil {
 			query = query.Where("updated_at > ?", t)
 		}
 	}
 
-	includeDeleted := c.Query("include_deleted") == "true"
-	if !includeDeleted {
+	if r.URL.Query().Get("include_deleted") != "true" {
 		query = query.Where("is_deleted = ?", false)
 	}
 
 	var habits []model.Habit
 	if err := query.Find(&habits).Error; err != nil {
-		respondError(c, http.StatusInternalServerError, "SERVER_ERROR", "Failed to fetch habits")
+		respondError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to fetch habits")
 		return
 	}
 
@@ -90,50 +89,50 @@ func (h *HabitHandler) List(c *gin.Context) {
 		result[i] = toHabitResponse(&habit)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"habits":      result,
 		"server_time": serverTime.Format(time.RFC3339),
 	})
 }
 
-func (h *HabitHandler) Create(c *gin.Context) {
-	userID := getUserID(c)
+func (h *HabitHandler) Create(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
 
 	var req createHabitRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
 		return
 	}
 
 	if req.ClientID == "" {
-		respondError(c, http.StatusBadRequest, "MISSING_CLIENT_ID", "client_id is required")
+		respondError(w, http.StatusBadRequest, "MISSING_CLIENT_ID", "client_id is required")
 		return
 	}
 
 	if req.Name == "" {
-		respondError(c, http.StatusBadRequest, "MISSING_NAME", "Name is required")
+		respondError(w, http.StatusBadRequest, "MISSING_NAME", "Name is required")
 		return
 	}
 
 	if len(req.Name) > 255 {
-		respondError(c, http.StatusUnprocessableEntity, "NAME_TOO_LONG", "Name must not exceed 255 characters")
+		respondError(w, http.StatusUnprocessableEntity, "NAME_TOO_LONG", "Name must not exceed 255 characters")
 		return
 	}
 
 	if req.FrequencyType != "daily" && req.FrequencyType != "weekly" {
-		respondError(c, http.StatusBadRequest, "INVALID_FREQUENCY", "frequency_type must be 'daily' or 'weekly'")
+		respondError(w, http.StatusBadRequest, "INVALID_FREQUENCY", "frequency_type must be 'daily' or 'weekly'")
 		return
 	}
 
 	if req.FrequencyValue < 1 || req.FrequencyValue > 7 {
-		respondError(c, http.StatusBadRequest, "INVALID_FREQUENCY", "frequency_value must be between 1 and 7")
+		respondError(w, http.StatusBadRequest, "INVALID_FREQUENCY", "frequency_value must be between 1 and 7")
 		return
 	}
 
-	// Idempotency: check if client_id already exists
+	// Idempotency: return existing if client_id already exists
 	var existing model.Habit
 	if err := h.DB.Where("client_id = ?", req.ClientID).First(&existing).Error; err == nil {
-		c.JSON(http.StatusOK, toHabitResponse(&existing))
+		writeJSON(w, http.StatusOK, toHabitResponse(&existing))
 		return
 	}
 
@@ -147,36 +146,35 @@ func (h *HabitHandler) Create(c *gin.Context) {
 	}
 
 	if err := h.DB.Create(&habit).Error; err != nil {
-		respondError(c, http.StatusInternalServerError, "SERVER_ERROR", "Failed to create habit")
+		respondError(w, http.StatusInternalServerError, "SERVER_ERROR", "Failed to create habit")
 		return
 	}
 
-	c.JSON(http.StatusCreated, toHabitResponse(&habit))
+	writeJSON(w, http.StatusCreated, toHabitResponse(&habit))
 }
 
-func (h *HabitHandler) Update(c *gin.Context) {
-	userID := getUserID(c)
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+func (h *HabitHandler) Update(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
+	id, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
+		respondError(w, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
 		return
 	}
 
 	var habit model.Habit
 	if err := h.DB.Where("id = ? AND user_id = ?", id, userID).First(&habit).Error; err != nil {
-		respondError(c, http.StatusNotFound, "NOT_FOUND", "Habit not found or not owned by user")
+		respondError(w, http.StatusNotFound, "NOT_FOUND", "Habit not found or not owned by user")
 		return
 	}
 
 	var req updateHabitRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
 		return
 	}
 
-	// Optimistic locking
 	if req.UpdatedAt != nil && habit.UpdatedAt.After(*req.UpdatedAt) {
-		respondError(c, http.StatusConflict, "CONFLICT", "Server version is newer. Please re-fetch and try again.")
+		respondError(w, http.StatusConflict, "CONFLICT", "Server version is newer. Please re-fetch and try again.")
 		return
 	}
 
@@ -186,11 +184,11 @@ func (h *HabitHandler) Update(c *gin.Context) {
 
 	if req.Name != nil {
 		if *req.Name == "" {
-			respondError(c, http.StatusBadRequest, "MISSING_NAME", "Name cannot be empty")
+			respondError(w, http.StatusBadRequest, "MISSING_NAME", "Name cannot be empty")
 			return
 		}
 		if len(*req.Name) > 255 {
-			respondError(c, http.StatusUnprocessableEntity, "NAME_TOO_LONG", "Name must not exceed 255 characters")
+			respondError(w, http.StatusUnprocessableEntity, "NAME_TOO_LONG", "Name must not exceed 255 characters")
 			return
 		}
 		updates["name"] = *req.Name
@@ -202,7 +200,7 @@ func (h *HabitHandler) Update(c *gin.Context) {
 
 	if req.FrequencyType != nil {
 		if *req.FrequencyType != "daily" && *req.FrequencyType != "weekly" {
-			respondError(c, http.StatusBadRequest, "INVALID_FREQUENCY", "frequency_type must be 'daily' or 'weekly'")
+			respondError(w, http.StatusBadRequest, "INVALID_FREQUENCY", "frequency_type must be 'daily' or 'weekly'")
 			return
 		}
 		updates["frequency_type"] = *req.FrequencyType
@@ -210,47 +208,43 @@ func (h *HabitHandler) Update(c *gin.Context) {
 
 	if req.FrequencyValue != nil {
 		if *req.FrequencyValue < 1 || *req.FrequencyValue > 7 {
-			respondError(c, http.StatusBadRequest, "INVALID_FREQUENCY", "frequency_value must be between 1 and 7")
+			respondError(w, http.StatusBadRequest, "INVALID_FREQUENCY", "frequency_value must be between 1 and 7")
 			return
 		}
 		updates["frequency_value"] = *req.FrequencyValue
 	}
 
 	h.DB.Model(&habit).Updates(updates)
-
-	// Reload to get updated values
 	h.DB.First(&habit, id)
 
-	c.JSON(http.StatusOK, toHabitResponse(&habit))
+	writeJSON(w, http.StatusOK, toHabitResponse(&habit))
 }
 
-func (h *HabitHandler) Delete(c *gin.Context) {
-	userID := getUserID(c)
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+func (h *HabitHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
+	id, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
 	if err != nil {
-		respondError(c, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
+		respondError(w, http.StatusBadRequest, "INVALID_ID", "Invalid habit ID")
 		return
 	}
 
 	var habit model.Habit
 	if err := h.DB.Where("id = ? AND user_id = ?", id, userID).First(&habit).Error; err != nil {
-		respondError(c, http.StatusNotFound, "NOT_FOUND", "Habit not found or not owned by user")
+		respondError(w, http.StatusNotFound, "NOT_FOUND", "Habit not found or not owned by user")
 		return
 	}
 
 	now := time.Now().UTC()
 
-	// Soft-delete the habit
 	h.DB.Model(&habit).Updates(map[string]interface{}{
 		"is_deleted": true,
 		"updated_at": now,
 	})
 
-	// Cascade soft-delete to logs
 	h.DB.Model(&model.HabitLog{}).Where("habit_id = ? AND user_id = ?", id, userID).Updates(map[string]interface{}{
 		"is_deleted": true,
 		"updated_at": now,
 	})
 
-	c.Status(http.StatusNoContent)
+	w.WriteHeader(http.StatusNoContent)
 }

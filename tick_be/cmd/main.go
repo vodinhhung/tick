@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 
 	"tick/be/api"
 	"tick/be/config"
@@ -21,7 +22,7 @@ func main() {
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	fmt.Printf("Server starting at http://localhost%s\n", addr)
-	if err := router.Run(addr); err != nil {
+	if err := http.ListenAndServe(addr, router); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
