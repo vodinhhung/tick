@@ -3,16 +3,25 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/http"
 
-	"tick/be/internal/auth"
+	"tick/be/api"
+	"tick/be/config"
+	"tick/be/internal/database"
 )
 
 func main() {
-	http.HandleFunc("/", auth.HandleHome)
-	http.HandleFunc("/auth/google/login", auth.HandleGoogleLogin)
-	http.HandleFunc("/auth/google/callback", auth.HandleGoogleCallback)
+	cfg, err := config.LoadConfig("config/cfg")
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
 
-	fmt.Println("Server started at http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	db := database.InitDB(&cfg.Database)
+
+	router := api.SetupRouter(db, cfg.JWTSecret, cfg.GoogleClientID)
+
+	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	fmt.Printf("Server starting at http://localhost%s\n", addr)
+	if err := router.Run(addr); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
 }

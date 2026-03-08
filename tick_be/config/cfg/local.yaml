@@ -1,0 +1,12 @@
+database:
+  host: localhost
+  port: 3306
+  user: root
+  password: password
+  name: tick_db
+
+jwt_secret: "change-me-in-production-use-a-long-random-string"
+google_client_id: "your-google-client-id.apps.googleusercontent.com"
+
+server:
+  port: 8080
