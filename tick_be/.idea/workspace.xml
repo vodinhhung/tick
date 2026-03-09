@@ -6,18 +6,6 @@
   <component name="ChangeListManager">
     <list default="true" id="b9ba6078-9dc3-4d48-946d-0da662a97812" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/api/router.go" beforeDir="false" afterPath="$PROJECT_DIR$/api/router.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/cmd/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/cmd/main.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/go.mod" beforeDir="false" afterPath="$PROJECT_DIR$/go.mod" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/go.sum" beforeDir="false" afterPath="$PROJECT_DIR$/go.sum" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/auth.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/auth.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/category.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/category.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/errors.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/errors.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/habit.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/habit.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/habit_log.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/habit_log.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/stats.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/stats.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/sync.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/sync.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/middleware/jwt.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/middleware/jwt.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/../tick_fe" beforeDir="false" afterPath="$PROJECT_DIR$/../tick_fe" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
